@@ -11,13 +11,12 @@ class ThreadsScraper:
         self.base_url = f"https://www.threads.net/@{self.username}"
         self.start_date = datetime.strptime(start_date, "%Y-%m-%d")
         self.end_date = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-        self.skip_pinned = skip_pinned  # 상위 고정글 제외 개수
+        self.skip_pinned = skip_pinned
         self.posts = []
     
     async def scrape_posts(self) -> list:
         """
         Threads 프로필에서 기간 내 모든 게시물 수집
-        상위 N개 고정글은 제외
         """
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -39,14 +38,18 @@ class ThreadsScraper:
                 
                 posts_data = []
                 collected_links = set()
-                skipped_links = set()  # 스킵한 고정글 링크
+                skipped_links = set()
                 last_height = 0
                 no_change_count = 0
                 consecutive_old_posts = 0
                 max_consecutive_old = 10
-                total_encountered = 0  # 총 발견한 게시물 수
+                total_encountered = 0
+                scroll_count = 0
+                max_scrolls = 100  # 최대 스크롤 횟수 증가
                 
-                while True:
+                while scroll_count < max_scrolls:
+                    scroll_count += 1
+                    
                     # 페이지 HTML 가져오기
                     html_content = await page.content()
                     new_posts = self._parse_posts_from_html(html_content, collected_links, skipped_links)
@@ -71,10 +74,10 @@ class ThreadsScraper:
                             consecutive_old_posts = 0
                             continue
                         
-                        # 종료일보다 이후 → 스킵
+                        # 종료일보다 이후 → 스킵하지만 스크롤은 계속
                         if post_date > self.end_date:
-                            print(f"[SKIP] 종료일 이후: {post_date.date()}")
-                            consecutive_old_posts = 0
+                            # 스킵만 하고 카운트하지 않음 (스크롤 계속)
+                            skipped_links.add(post["link"])
                             continue
                         
                         # 시작일보다 이전 → 카운트 증가
@@ -90,7 +93,7 @@ class ThreadsScraper:
                         # 기간 내 → 수집
                         posts_data.append(post)
                         collected_links.add(post["link"])
-                        consecutive_old_posts = 0
+                        consecutive_old_posts = 0  # 리셋
                         print(f"[+] 수집 ({len(posts_data)}개): {post_date.date()} | {post['text'][:30]}...")
                     
                     # 종료 조건 체크
@@ -99,23 +102,28 @@ class ThreadsScraper:
                     
                     # 스크롤
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(2500)  # 대기 시간 증가
                     
                     # 스크롤 변화 감지
                     new_height = await page.evaluate("document.body.scrollHeight")
                     if new_height == last_height:
                         no_change_count += 1
+                        print(f"[*] 스크롤 변화 없음 ({no_change_count}/5)")
                         if no_change_count >= 5:
                             print("[*] 더 이상 스크롤되지 않음, 수집 종료")
                             break
+                        # 추가 대기 후 재시도
+                        await page.wait_for_timeout(2000)
                     else:
                         no_change_count = 0
                     last_height = new_height
                     
-                    print(f"[*] 스크롤 진행 중... (수집: {len(posts_data)}개, 스킵: {len(skipped_links)}개)")
+                    # 진행 상황 (10번마다 출력)
+                    if scroll_count % 5 == 0:
+                        print(f"[*] 스크롤 #{scroll_count}... (수집: {len(posts_data)}개)")
                 
                 self.posts = posts_data
-                print(f"\n[완료] 총 {len(self.posts)}개 게시물 수집됨 (고정글 {len(skipped_links)}개 제외)")
+                print(f"\n[완료] 총 {len(self.posts)}개 게시물 수집됨")
                 
             except Exception as e:
                 print(f"[에러] 크롤링 실패: {e}")
@@ -139,7 +147,6 @@ class ThreadsScraper:
             try:
                 post = self._extract_post_from_element(container)
                 if post and post.get("link"):
-                    # 이미 수집했거나 스킵한 게시물은 제외
                     if post["link"] not in existing_links and post["link"] not in skipped_links and post.get("text"):
                         posts.append(post)
             except:

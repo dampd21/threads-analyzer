@@ -68,6 +68,30 @@ def main():
         # 테스트 데이터
         run_with_test_data()
 
+# run_local.py에 로그인 옵션 추가
+
+def main():
+    print("=" * 60)
+    print("Threads 가이드라인 분석기 (로컬 실행)")
+    print("=" * 60)
+    
+    print("\n[0] 사전 작업")
+    print("    L: 로그인하여 쿠키 저장 (최초 1회)")
+    print("    S: 바로 분석 시작")
+    
+    action = input("\n선택 (L/S, 기본값: S): ").strip().upper()
+    
+    if action == "L":
+        # 로그인만 수행
+        import asyncio
+        from scraper import ThreadsScraper
+        scraper = ThreadsScraper("dummy", "2024-01-01", "2024-12-31")
+        asyncio.run(scraper.login_and_save_cookies())
+        print("\n✅ 로그인 완료! 이제 분석을 실행할 수 있습니다.")
+        return
+    
+    # 이하 기존 코드...
+
 
 def run_with_json(filepath: str):
     """JSON 파일에서 게시물 로드하여 분석"""

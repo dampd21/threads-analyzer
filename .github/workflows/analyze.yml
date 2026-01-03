@@ -11,12 +11,17 @@ on:
       start_date:
         description: '시작일 (YYYY-MM-DD)'
         required: true
-        default: '2024-01-01'
+        default: '2025-01-01'
         type: string
       end_date:
         description: '종료일 (YYYY-MM-DD)'
         required: true
-        default: '2025-12-31'
+        default: '2026-12-31'
+        type: string
+      skip_pinned:
+        description: '상위 고정글 제외 개수'
+        required: false
+        default: '10'
         type: string
 
 jobs:
@@ -46,6 +51,7 @@ jobs:
           THREADS_USERNAME: ${{ github.event.inputs.username }}
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
+          SKIP_PINNED: ${{ github.event.inputs.skip_pinned }}
         run: |
           python src/main.py
 
@@ -63,6 +69,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **사용자**: @${{ github.event.inputs.username }}" >> $GITHUB_STEP_SUMMARY
           echo "- **기간**: ${{ github.event.inputs.start_date }} ~ ${{ github.event.inputs.end_date }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **고정글 제외**: ${{ github.event.inputs.skip_pinned }}개" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f output/summary.txt ]; then
             cat output/summary.txt >> $GITHUB_STEP_SUMMARY

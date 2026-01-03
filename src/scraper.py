@@ -16,28 +16,23 @@ class ThreadsScraper:
         self.posts = []
     
     async def scrape_posts(self) -> list:
-        """
-        Threads 프로필에서 기간 내 모든 게시물 수집
-        """
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--no-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-web-security'
+                    '--disable-dev-shm-usage'
                 ]
             )
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 locale="ko-KR",
                 viewport={"width": 1920, "height": 1080}
             )
             
             await context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                window.chrome = { runtime: {} };
             """)
             
             page = await context.new_page()
@@ -47,19 +42,18 @@ class ThreadsScraper:
                 print(f"[*] 수집 기간: {self.start_date.date()} ~ {self.end_date.date()}")
                 print(f"[*] 상위 고정글 {self.skip_pinned}개 제외")
                 
-                await page.goto(self.base_url, wait_until="domcontentloaded", timeout=60000)
+                await page.goto(self.base_url, wait_until="networkidle", timeout=60000)
                 await page.wait_for_timeout(5000)
                 
-                # 페이지 로드 확인
-                page_content = await page.content()
-                if "Log in" in page_content or "로그인" in page_content:
-                    print("[!] 로그인 필요할 수 있음")
+                # 페이지 클릭해서 포커스 (스크롤 작동하게)
+                await page.click("body")
+                await page.wait_for_timeout(1000)
                 
                 # ========== 1단계: 고정글 식별 ==========
                 pinned_links = set()
                 initial_posts = self._parse_all_posts_from_html(await page.content())
                 
-                print(f"[*] 초기 로드: {len(initial_posts)}개 게시물")
+                print(f"[*] 초기 로드: {len(initial_posts)}개")
                 
                 for i, post in enumerate(initial_posts):
                     if i < self.skip_pinned and post.get("link"):
@@ -68,26 +62,44 @@ class ThreadsScraper:
                 
                 print(f"[*] 고정글 {len(pinned_links)}개 식별 완료\n")
                 
-                # ========== 2단계: 스크롤하면서 수집 ==========
+                # ========== 2단계: Page Down으로 스크롤 ==========
                 posts_data = []
                 collected_links = set()
                 consecutive_old = 0
                 max_consecutive_old = 20
                 scroll_count = 0
                 max_scrolls = 500
-                no_new_count = 0
-                max_no_new = 20
-                last_post_count = 0
+                last_post_count = len(initial_posts)
+                stuck_count = 0
+                max_stuck = 30
                 
                 while scroll_count < max_scrolls:
                     scroll_count += 1
                     
-                    # 현재 페이지의 모든 게시물 파싱
-                    all_posts = self._parse_all_posts_from_html(await page.content())
-                    current_post_count = len(all_posts)
+                    # Page Down 키로 스크롤
+                    for _ in range(5):
+                        await page.keyboard.press("PageDown")
+                        await page.wait_for_timeout(300)
                     
-                    # 새로 로드된 게시물 처리
-                    new_found = 0
+                    # 로드 대기
+                    await page.wait_for_timeout(1500)
+                    
+                    # 현재 게시물 파싱
+                    all_posts = self._parse_all_posts_from_html(await page.content())
+                    current_count = len(all_posts)
+                    
+                    # 새 게시물 로드 확인
+                    if current_count > last_post_count:
+                        print(f"[*] 새 게시물 로드: {last_post_count} → {current_count}")
+                        stuck_count = 0
+                        last_post_count = current_count
+                    else:
+                        stuck_count += 1
+                        if stuck_count >= max_stuck:
+                            print(f"\n[*] {max_stuck}회 연속 새 게시물 없음, 종료")
+                            break
+                    
+                    # 새 게시물 처리
                     for post in all_posts:
                         link = post.get("link", "")
                         if not link or link in collected_links or link in pinned_links:
@@ -97,7 +109,6 @@ class ThreadsScraper:
                         if not post.get("text"):
                             continue
                         
-                        new_found += 1
                         post_date = self._parse_date(post.get("datetime", ""))
                         
                         if post_date is None:
@@ -106,12 +117,10 @@ class ThreadsScraper:
                             print(f"[+] ({len(posts_data)}): (날짜없음) {post['text'][:35]}...")
                             continue
                         
-                        # 종료일보다 미래 → 스킵
                         if post_date > self.end_date:
                             consecutive_old = 0
                             continue
                         
-                        # 시작일보다 과거 → 카운트
                         if post_date < self.start_date:
                             consecutive_old += 1
                             if consecutive_old >= max_consecutive_old:
@@ -119,7 +128,6 @@ class ThreadsScraper:
                                 break
                             continue
                         
-                        # 기간 내 → 수집
                         posts_data.append(post)
                         consecutive_old = 0
                         print(f"[+] ({len(posts_data)}): {post_date.date()} {post['text'][:35]}...")
@@ -127,21 +135,8 @@ class ThreadsScraper:
                     if consecutive_old >= max_consecutive_old:
                         break
                     
-                    # 새 게시물 로드 여부 확인 (게시물 수 기준)
-                    if current_post_count == last_post_count:
-                        no_new_count += 1
-                        if no_new_count >= max_no_new:
-                            print(f"\n[*] 새 게시물 로드 안됨 {max_no_new}회, 종료")
-                            break
-                    else:
-                        no_new_count = 0
-                        last_post_count = current_post_count
-                    
-                    # ========== 핵심: 스크롤 ==========
-                    await self._scroll_down(page)
-                    
-                    if scroll_count % 10 == 0:
-                        print(f"[*] 스크롤 #{scroll_count} (수집: {len(posts_data)}, 로드: {current_post_count})")
+                    if scroll_count % 20 == 0:
+                        print(f"[*] 스크롤 #{scroll_count} (수집: {len(posts_data)}, 로드: {current_count})")
                 
                 self.posts = posts_data
                 print(f"\n{'='*50}")
@@ -156,35 +151,6 @@ class ThreadsScraper:
                 await browser.close()
         
         return self.posts
-    
-    async def _scroll_down(self, page):
-        """
-        페이지 끝까지 스크롤해서 새 게시물 로드
-        """
-        # 방법 1: 키보드로 스크롤 (End 키)
-        await page.keyboard.press("End")
-        await page.wait_for_timeout(1000)
-        
-        # 방법 2: 마우스 휠 시뮬레이션
-        await page.mouse.wheel(0, 3000)
-        await page.wait_for_timeout(1000)
-        
-        # 방법 3: JavaScript로 스크롤
-        await page.evaluate("""
-            window.scrollTo({
-                top: document.body.scrollHeight,
-                behavior: 'smooth'
-            });
-        """)
-        await page.wait_for_timeout(2000)
-        
-        # 방법 4: 추가로 더 스크롤
-        for _ in range(3):
-            await page.evaluate("window.scrollBy(0, 1000)")
-            await page.wait_for_timeout(500)
-        
-        # 로드 대기
-        await page.wait_for_timeout(random.randint(1500, 2500))
     
     def _parse_all_posts_from_html(self, html: str) -> list:
         soup = BeautifulSoup(html, 'html.parser')
@@ -221,17 +187,15 @@ class ThreadsScraper:
         username_el = element.select_one('a[href^="/@"] span span')
         username = username_el.get_text(strip=True) if username_el else ""
         
-        stats = {"likes": 0, "replies": 0, "reposts": 0}
-        
         if text_content.strip():
             return {
                 "username": username,
                 "text": text_content.strip(),
                 "datetime": post_time,
                 "link": post_link,
-                "likes": stats["likes"],
-                "replies": stats["replies"],
-                "reposts": stats["reposts"],
+                "likes": 0,
+                "replies": 0,
+                "reposts": 0,
                 "scraped_at": datetime.now().isoformat()
             }
         return None
